@@ -41,7 +41,16 @@ class IconFinderService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
-    private var recents = false
+    private var recentsEvt = false      // launcher reported a recents-like screen class
+    private var recentsNode = false     // recents views seen in the launcher's node tree, or no icons at all
+    private var recentsEvtAt = 0L
+    private var missCount = 0           // consecutive settled scans that found no icons
+    private var lastScrollMs = 0L
+    private val recents: Boolean get() = recentsEvt || recentsNode
+
+    private fun refreshHome() {
+        homeFromWindows()?.let { setHome(it) }
+    }
 
     /**
      * Is the home screen what the user is looking at? Looks at the top-most application window
@@ -86,7 +95,10 @@ class IconFinderService : AccessibilityService() {
         if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             // Ignore system overlays that do not change what the user is looking at.
             if (pkg == "com.android.systemui" || pkg == packageName) return
-            if (pkg == launcher) recents = event.className?.contains("recent", ignoreCase = true) == true
+            if (pkg == launcher) {
+                recentsEvt = event.className?.let { it.contains("recent", true) || it.contains("overview", true) } == true
+                recentsEvtAt = System.currentTimeMillis()
+            }
             setHome(homeFromWindows() ?: (pkg == launcher && !recents))
         }
         if (event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED && pkg == launcher) {
@@ -94,6 +106,7 @@ class IconFinderService : AccessibilityService() {
             val horizontal = if (dx != 0 || dy != 0) abs(dx) >= 2 && abs(dx) > abs(dy)
             else event.maxScrollX > 0 && event.scrollX != lastScrollX
             lastScrollX = event.scrollX
+            lastScrollMs = System.currentTimeMillis()
             if (horizontal) {
                 IconRegistry.swipeListener?.invoke()
                 // rescan shortly after the last scroll event, i.e. once the page has settled
@@ -126,10 +139,17 @@ class IconFinderService : AccessibilityService() {
         val found = ArrayList<RectF>()
         val seen = HashSet<Long>()
         val b = Rect()
+        var sawRecents = false
 
         fun walk(n: AccessibilityNodeInfo?, depth: Int) {
             if (n == null || depth > 14) return
             val cls = n.className?.toString() ?: ""
+            if (!sawRecents && n.isVisibleToUser) {
+                val id = n.viewIdResourceName ?: ""
+                if (id.contains("recents", true) || id.contains("overview", true) || id.contains("task_view", true) ||
+                    id.contains("clear_all", true) || cls.contains("RecentsView") || cls.contains("TaskView")
+                ) sawRecents = true
+            }
             val isWidget = cls.contains("WidgetHostView")
             val labelled = !n.text.isNullOrEmpty() || !n.contentDescription.isNullOrEmpty()
             val isIconNode = (n.isClickable || n.isLongClickable) && labelled
@@ -162,9 +182,19 @@ class IconFinderService : AccessibilityService() {
         }
         try { walk(root, 0) } catch (e: Exception) { return }
 
-        if (found.size >= 4) {
+        // No icons for two settled scans in a row also means the home screen is covered (recents etc.).
+        val settled = System.currentTimeMillis() - lastScrollMs > 600
+        if (found.size >= 4) missCount = 0 else if (settled) missCount++
+        // a recents flag from an event is dropped once icons are plainly visible again for a while
+        val evtStale = recentsEvt && found.size >= 4 && !sawRecents && System.currentTimeMillis() - recentsEvtAt > 4000
+        if (evtStale) recentsEvt = false
+        val nowRecents = sawRecents || missCount >= 2
+        val changed = nowRecents != recentsNode || evtStale
+        recentsNode = nowRecents
+        if (found.size >= 4 && !sawRecents) {
             IconRegistry.icons = found
             IconRegistry.listener?.invoke()
         }
+        if (changed) refreshHome()
     }
 }

@@ -48,7 +48,7 @@ When the launcher scrolls sideways (the icon finder sees scroll events), the dra
 
 ## Home screen or app?
 
-The icon finder looks at the top-most application window (keyboards, the status bar, picture-in-picture and the dragon's own overlay are ignored). If that window is the launcher, the dragon is shown. If it is any other app, the dragon fades out and the frame loop stops, then it fades back in on the home screen after the icons are read again. The recents screen is detected by its class name, which is a best guess on HyperOS. If the icon finder is off, the app cannot tell, so the dragon stays on screen.
+The icon finder looks at the top-most application window (keyboards, the status bar, picture-in-picture and the dragon's own overlay are ignored). If that window is the launcher, the dragon is shown. If it is any other app, the dragon fades out and the frame loop stops, then it fades back in on the home screen after the icons are read again. The recents screen is detected three ways, all best guesses on HyperOS: the screen's class name, recents-looking views in the launcher's node tree (ids containing recents, overview, task_view or clear_all), and the launcher showing no icons at all for two settled scans. If the icon finder is off, the app cannot tell, so the dragon stays on screen.
 
 ## Speed
 
