@@ -11,6 +11,7 @@ import android.graphics.RadialGradient
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
+import android.os.SystemClock
 import android.view.Choreographer
 import android.view.View
 import kotlin.math.PI
@@ -20,7 +21,9 @@ import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.floor
 import kotlin.math.pow
+import kotlin.math.sqrt
 import kotlin.math.sin
 import kotlin.random.Random
 
@@ -41,7 +44,7 @@ class DragonView(context: Context) : View(context) {
     private enum class Mode { IDLE, CROUCH, FLY, FIRE, WALK }
 
     private class Icon(val r: RectF, val row: Int) {
-        var burn = 0f; var heat = 0f; var ember = 0f; var sm = 0f
+        var burn = 0f; var heat = 0f; var ember = 0f; var sm = 0f; var lk = 0f
         var big = false          // widget or large folder: bigger ground the dragon can crawl on
         val scorch = Array(4) { floatArrayOf(rnd(-.28f, .28f), rnd(-.28f, .28f), rnd(.28f, .5f), rnd(0f, TAU)) }
         val cx: Float get() = r.centerX()
@@ -136,31 +139,110 @@ class DragonView(context: Context) : View(context) {
         return bmp
     }
 
-    private fun puff(r: Int, g: Int, b: Int, a: Float): Bitmap {
-        val bmp = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
-        val p = Paint(Paint.ANTI_ALIAS_FLAG)
-        for (i in 0 until 14) {
-            val ang = rnd(0f, TAU); val d = rnd(0f, 30f)
-            val cx = 64f + cos(ang) * d; val cy = 64f + sin(ang) * d; val rad = rnd(18f, 36f)
-            p.shader = RadialGradient(
-                cx, cy, rad,
-                intArrayOf(Color.argb((255 * a).toInt(), r, g, b), Color.argb((255 * a * 0.45f).toInt(), r, g, b), Color.argb(0, r, g, b)),
-                floatArrayOf(0f, 0.6f, 1f), Shader.TileMode.CLAMP
-            )
-            c.drawRect(0f, 0f, 128f, 128f, p)
+    // ---- value-noise textures (built once, so drawing stays as cheap as before) ----
+    private fun hashf(x: Int, y: Int, sd: Int): Float {
+        var h = x * 374761393 + y * 668265263 + sd * 1442695041
+        h = (h xor (h ushr 13)) * 1274126177
+        h = h xor (h ushr 16)
+        return (h and 0xFFFF) / 65535f
+    }
+
+    private fun vnoise(x: Float, y: Float, sd: Int): Float {
+        val xi = floor(x).toInt(); val yi = floor(y).toInt()
+        val xf = x - xi; val yf = y - yi
+        val u = xf * xf * (3f - 2f * xf); val v = yf * yf * (3f - 2f * yf)
+        val a = hashf(xi, yi, sd); val b = hashf(xi + 1, yi, sd)
+        val c = hashf(xi, yi + 1, sd); val d = hashf(xi + 1, yi + 1, sd)
+        return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v
+    }
+
+    private fun fbm(x0: Float, y0: Float, sd: Int): Float {
+        var x = x0; var y = y0; var t = 0f; var amp = 0.5f; var n = 0f
+        for (o in 0 until 4) { t += vnoise(x, y, sd + o) * amp; n += amp; amp *= 0.5f; x = x * 2.03f + 17.1f; y = y * 2.03f + 9.7f }
+        return t / n
+    }
+
+    private fun smooth(a: Float, b: Float, x: Float): Float {
+        val t = clampF((x - a) / (b - a), 0f, 1f)
+        return t * t * (3f - 2f * t)
+    }
+
+    /** Wispy flame blob: soft falloff broken up by warped noise, hot core brightened. */
+    private fun flameSprite(r: Int, g: Int, b: Int, sd: Int): Bitmap {
+        val n = 96
+        val px = IntArray(n * n)
+        for (y in 0 until n) for (x in 0 until n) {
+            val dx = (x + 0.5f) / n * 2f - 1f; val dy = (y + 0.5f) / n * 2f - 1f
+            val wx = dx + (fbm(x / 18f, y / 18f, sd) - 0.5f) * 0.55f
+            val wy = dy + (fbm(x / 18f + 31f, y / 18f + 7f, sd + 9) - 0.5f) * 0.55f
+            val d = sqrt(wx * wx + wy * wy)
+            val base = smooth(1f, 0f, d).pow(1.6f)
+            val nn = fbm(x / 11f + sd, y / 11f, sd + 3)
+            val a = clampF(base * (0.82f + 0.9f * (nn - 0.5f)), 0f, 1f)
+            val hot = smooth(0.55f, 0f, d) * smooth(0.3f, 0.7f, nn)
+            val cr = min(255f, r + (255 - r) * 0.35f * hot).toInt()
+            val cg = min(255f, g + (255 - g) * 0.35f * hot).toInt()
+            val cb = min(255f, b + (255 - b) * 0.35f * hot).toInt()
+            px[y * n + x] = Color.argb((a * 255f).toInt(), cr, cg, cb)
         }
+        val bmp = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888)
+        bmp.setPixels(px, 0, n, 0, 0, n, n)
         return bmp
     }
 
+    /** Billowy smoke puff with a lit top-left edge and a darker underside. */
+    private fun puff(r: Int, g: Int, b: Int, al: Float, sd: Int): Bitmap {
+        val n = 128
+        val dens = FloatArray(n * n)
+        for (y in 0 until n) for (x in 0 until n) {
+            val dx = (x + 0.5f) / n * 2f - 1f; val dy = (y + 0.5f) / n * 2f - 1f
+            val wx = dx + (fbm(x / 26f, y / 26f, sd) - 0.5f) * 0.7f
+            val wy = dy + (fbm(x / 26f + 5f, y / 26f + 3f, sd + 7) - 0.5f) * 0.7f
+            val d = sqrt(wx * wx + wy * wy)
+            val v = smooth(1f, 0.2f, d) * (0.45f + 0.75f * fbm(x / 14f, y / 14f, sd + 2))
+            dens[y * n + x] = 1f - kotlin.math.exp(-1.6f * v)
+        }
+        val px = IntArray(n * n)
+        for (y in 0 until n) for (x in 0 until n) {
+            val dv = dens[y * n + x]
+            val o = dens[max(0, y - 3) * n + max(0, x - 3)]
+            val lit = clampF(1f + 2.2f * (dv - o), 0.7f, 1.6f)
+            px[y * n + x] = Color.argb(
+                (clampF(dv * al * 1.8f, 0f, 1f) * 255f).toInt(),
+                min(255, (r * lit).toInt()), min(255, (g * lit).toInt()), min(255, (b * lit).toInt())
+            )
+        }
+        val bmp = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888)
+        bmp.setPixels(px, 0, n, 0, 0, n, n)
+        return bmp
+    }
+
+    // smooth glows: scorch marks, icon halos, muzzle flash
     private val sCore = glow(238, 249, 255)
     private val sCyan = glow(95, 214, 255)
     private val sBlue = glow(48, 110, 255)
-    private val sDeep = glow(70, 48, 225)
     private val sBlack = glow(0, 0, 0)
-    private val smkDark = Array(3) { puff(34, 36, 44, 0.34f) }
-    private val smkMid = Array(3) { puff(112, 118, 130, 0.3f) }
-    private val smkBlue = Array(2) { puff(70, 120, 200, 0.34f) }
+    // wispy flame particles, two noise variants per colour stage
+    private val fCore = Array(2) { flameSprite(238, 249, 255, 11 + it * 5) }
+    private val fCyan = Array(2) { flameSprite(95, 214, 255, 11 + it * 5) }
+    private val fBlue = Array(2) { flameSprite(48, 110, 255, 11 + it * 5) }
+    private val fDeep = Array(2) { flameSprite(70, 48, 225, 11 + it * 5) }
+    private val smkDark = Array(3) { puff(34, 36, 44, 0.34f, 21 + it * 4) }
+    private val smkMid = Array(3) { puff(112, 118, 130, 0.3f, 21 + it * 4) }
+    private val smkBlue = Array(2) { puff(70, 120, 200, 0.34f, 21 + it * 4) }
+
+    // ---------- page swipe fade ----------
+    private var fade = 1f
+    private var fadeGoal = 1f
+    private var swipeState = 0       // 0 idle, 1 swiping, 2 settled and waiting for the new page's icons
+    private var swipeLast = 0L
+    private var settleAt = 0L
+
+    /** The launcher is scrolling sideways: fade out fast. */
+    fun onSwipe() {
+        swipeLast = SystemClock.uptimeMillis()
+        if (swipeState != 1) { swipeState = 1; fadeGoal = 0f }
+    }
 
     // ---------- frame loop ----------
     private var running = false
@@ -261,30 +343,44 @@ class DragonView(context: Context) : View(context) {
 
     private fun applyIcons(rects: List<RectF>) {
         if (rects.isEmpty()) return
+        if (swipeState == 1) return          // mid-swipe layouts are half off screen: ignore them
+        val settling = swipeState == 2
         val sorted = rects.sortedWith(compareBy({ it.centerY() }, { it.centerX() }))
         // The icon finder reports the same layout many times, so skip identical lists.
         if (sorted.size == icons.size && sorted.indices.all {
                 abs(sorted[it].left - icons[it].r.left) < 1.5f && abs(sorted[it].top - icons[it].r.top) < 1.5f
             }
-        ) return
+        ) {
+            if (settling) { swipeState = 0; fadeGoal = 1f }   // same page again: fade back in where it was
+            return
+        }
 
         val avg = medianWidth(rects.map { it.width() })
         var row = 0
         var rowCy = sorted[0].centerY()
         val newIcons = ArrayList<Icon>()
+        var matched = 0
         for (r in sorted) {
             if (r.centerY() - rowCy > avg * 0.5f) { row++; rowCy = r.centerY() }
             val ic = Icon(RectF(r), row)
             icons.firstOrNull { abs(it.cx - ic.cx) < avg * 0.3f && abs(it.cy - ic.cy) < avg * 0.3f }?.let {
                 ic.burn = it.burn; ic.heat = it.heat; ic.ember = it.ember
+                matched++
             }
             newIcons.add(ic)
         }
         icons = newIcons
         applyScale()
+        val pageChanged = placed && icons.size >= 4 && matched < newIcons.size * 0.4f
         if (!placed) {
             placed = true
             land(Random.nextInt(icons.size), true)
+        } else if (settling || pageChanged) {
+            // A different home screen: the dragon appears on one of its icons with a fade-in.
+            nf = 0; ns = 0; nk = 0
+            land(Random.nextInt(icons.size), true)
+            if (!settling) fade = 0f         // launcher sent no scroll events: still hide the jump
+            swipeState = 0; fadeGoal = 1f
         } else if (mode == Mode.IDLE || mode == Mode.CROUCH) {
             val ni = nearestIcon(st.x, st.y)
             val nc = ic(ni)
@@ -496,6 +592,17 @@ class DragonView(context: Context) : View(context) {
         nf++
     }
 
+    /** Small flame tongue rising off an icon that was just set alight. */
+    private fun addLick(x: Float, y: Float) {
+        if (nf >= maxF - 40) return
+        fX[nf] = x; fY[nf] = y
+        fVx[nf] = rnd(-14f, 14f) * sc; fVy[nf] = -rnd(70f, 150f) * sc
+        fPx[nf] = 1f; fPy[nf] = 0f
+        fAge[nf] = 0f; fLife[nf] = rnd(0.35f, 0.6f); fSize[nf] = rnd(7f, 11f) * ds * 1.3f
+        fSeed[nf] = rnd(0f, TAU); fKind[nf] = 3
+        nf++
+    }
+
     private fun addSmoke(x: Float, y: Float, lit: Float) {
         if (ns >= maxS) return
         sX[ns] = x; sY[ns] = y
@@ -515,12 +622,20 @@ class DragonView(context: Context) : View(context) {
 
     // ---------- per-frame update ----------
     private fun step(dt: Float) {
+        val now = SystemClock.uptimeMillis()
+        if (swipeState == 1 && now - swipeLast > 120L) { swipeState = 2; settleAt = now }
+        else if (swipeState == 2 && now - settleAt > 450L) { swipeState = 0; fadeGoal = 1f }
+        fade += clampF(fadeGoal - fade, -dt / 0.09f, dt / 0.17f)
         if (icons.isEmpty()) return
         time += dt
         for (c in icons) {
             c.heat = max(0f, c.heat - dt * 1.4f)
             c.ember = max(0f, c.ember - dt * 0.25f)
             if (c.heat < 0.05f) c.burn = max(0f, c.burn - dt * 0.035f)
+            if (c.heat > 0.35f) {
+                c.lk += dt * 12f * c.heat
+                while (c.lk >= 1f) { c.lk -= 1f; addLick(c.r.left + rnd(.15f, .85f) * c.r.width(), c.r.top + rnd(.35f, .8f) * c.r.height()) }
+            }
             if (c.burn > 0.2f) {
                 c.sm += dt * (0.65f + 3.5f * c.heat) * c.burn
                 while (c.sm >= 1f) { c.sm -= 1f; addSmoke(c.r.left + rnd(.2f, .8f) * c.r.width(), c.r.top + rnd(.05f, .4f) * c.r.height(), c.heat) }
@@ -596,7 +711,7 @@ class DragonView(context: Context) : View(context) {
         var i = nf - 1
         while (i >= 0) {
             fAge[i] += dt
-            if (tgt != null && fX[i] > tgt.r.left - 4f && fX[i] < tgt.r.right + 4f && fY[i] > tgt.r.top - 4f && fY[i] < tgt.r.bottom + 4f) {
+            if (tgt != null && fKind[i] != 3 && fX[i] > tgt.r.left - 4f && fX[i] < tgt.r.right + 4f && fY[i] > tgt.r.top - 4f && fY[i] < tgt.r.bottom + 4f) {
                 fAge[i] += dt * 2.2f
                 if (Random.nextFloat() < 0.15f) {
                     addSplash(fX[i], tgt.r.top + size * 0.1f)
@@ -637,7 +752,7 @@ class DragonView(context: Context) : View(context) {
                 sSize[i] = sSize[ns]; sRot[i] = sRot[ns]; sRv[i] = sRv[ns]; sLit[i] = sLit[ns]; sSeed[i] = sSeed[ns]; sVar[i] = sVar[ns]
             } else {
                 val tt = sAge[i] / sLife[i]
-                sVx[i] += sin(sAge[i] * 2.3f + sSeed[i]) * 38f * sc * dt * (0.4f + tt)
+                sVx[i] += (sin(sAge[i] * 2.3f + sSeed[i]) * 38f + sin(time * 0.7f + sY[i] * 0.012f) * 30f) * sc * dt * (0.4f + tt)
                 sVy[i] += (-(34f * sc) * (1f - tt * 0.5f) - sVy[i]) * min(1f, dt * 1.2f)
                 sX[i] += sVx[i] * dt; sY[i] += sVy[i] * dt; sRot[i] += sRv[i] * dt
             }
@@ -666,11 +781,14 @@ class DragonView(context: Context) : View(context) {
 
     // ---------- drawing ----------
     override fun onDraw(c: Canvas) {
-        if (icons.isEmpty()) return
+        if (icons.isEmpty() || fade <= 0.01f) return
+        val layer = fade < 0.995f
+        val saved = if (layer) c.saveLayerAlpha(0f, 0f, width.toFloat(), height.toFloat(), (fade * 255f).toInt()) else 0
         for (ic in icons) if (ic.burn > 0.01f || ic.heat > 0.02f) drawBurn(c, ic)
         drawSmoke(c)
         model.draw(c, st)
         drawFlame(c)
+        if (layer) c.restoreToCount(saved)
     }
 
     private fun sprite(c: Canvas, b: Bitmap, cx: Float, cy: Float, half: Float, paint: Paint) {
@@ -681,7 +799,7 @@ class DragonView(context: Context) : View(context) {
     private fun drawBurn(c: Canvas, ic: Icon) {
         val r = ic.r
         if (ic.heat > 0.02f) {
-            plusPaint.alpha = (ic.heat * 0.85f * 255f).toInt()
+            plusPaint.alpha = (ic.heat * 0.85f * (0.88f + 0.12f * sin(time * 23f + ic.cx)) * 255f).toInt()
             dest.set(r.left - size * 0.6f, r.top - size * 0.6f, r.right + size * 0.6f, r.bottom + size * 0.6f)
             c.drawBitmap(sBlue, null, dest, plusPaint)
             plusPaint.alpha = (ic.heat * 0.5f * 255f).toInt()
@@ -739,14 +857,15 @@ class DragonView(context: Context) : View(context) {
             val s = fSize[i] * (0.55f + tt * (if (kind == 0) 1.0f else 1.5f))
             val spd = hypot(fVx[i], fVy[i])
             val stretch = 1f + min(1.6f, spd / (520f * sc)) * (if (kind == 2) 0.2f else 1f)
-            val spr = if (kind == 0) (if (tt < 0.4f) sCore else if (tt < 0.75f) sCyan else sBlue)
-            else (if (tt < 0.12f) sCore else if (tt < 0.4f) sCyan else if (tt < 0.75f) sBlue else sDeep)
+            val v = if (fSeed[i] > PI) 1 else 0
+            val spr = if (kind == 0) (if (tt < 0.4f) fCore[v] else if (tt < 0.75f) fCyan[v] else fBlue[v])
+            else (if (tt < 0.12f) fCore[v] else if (tt < 0.4f) fCyan[v] else if (tt < 0.75f) fBlue[v] else fDeep[v])
             c.save(); c.translate(fX[i], fY[i]); c.rotate(deg(atan2(fVy[i], fVx[i]))); c.scale(stretch, 1f)
             if (kind == 1 && (i and 1) == 0 && tt < 0.6f) {
                 plusPaint.alpha = ((1f - tt) * 0.4f * 255f).toInt()
                 sprite(c, sBlue, 0f, 0f, s * 1.7f, plusPaint)
             }
-            plusPaint.alpha = (min(1f, (1f - tt) * 1.1f) * 0.9f * 255f).toInt()
+            plusPaint.alpha = (min(1f, (1f - tt) * 1.1f) * 0.9f * (0.86f + 0.14f * sin(fAge[i] * 40f + fSeed[i])) * 255f).toInt()
             sprite(c, spr, 0f, 0f, s, plusPaint)
             c.restore()
         }

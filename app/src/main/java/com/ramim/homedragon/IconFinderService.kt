@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import kotlin.math.abs
 import kotlin.math.min
 
 /**
@@ -19,6 +20,8 @@ class IconFinderService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private var scanQueued = false
     private var lastScan = 0L
+    private var lastScrollX = -1
+    private val settleScan = Runnable { scanQueued = false; lastScan = System.currentTimeMillis(); scan() }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -48,6 +51,19 @@ class IconFinderService : AccessibilityService() {
             if (nowHome != IconRegistry.onHome) {
                 IconRegistry.onHome = nowHome
                 IconRegistry.listener?.invoke()
+            }
+        }
+        if (event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED && pkg == launcher) {
+            val dx = event.scrollDeltaX; val dy = event.scrollDeltaY
+            val horizontal = if (dx != 0 || dy != 0) abs(dx) >= 2 && abs(dx) > abs(dy)
+            else event.maxScrollX > 0 && event.scrollX != lastScrollX
+            lastScrollX = event.scrollX
+            if (horizontal) {
+                IconRegistry.swipeListener?.invoke()
+                // rescan shortly after the last scroll event, i.e. once the page has settled
+                handler.removeCallbacks(settleScan)
+                handler.postDelayed(settleScan, 150)
+                return
             }
         }
         if (pkg == launcher) queueScan()

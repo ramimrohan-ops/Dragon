@@ -42,6 +42,10 @@ dumpsys deviceidle whitelist +com.ramim.homedragon
 | Instant on wake or unlock | The view, bitmaps and dragon state stay in RAM inside the foreground service. Resume only re-posts the frame callback. It resumes on unlock (or on screen-on if there is no lock screen). |
 | Live screen, not a screenshot | Transparent `TYPE_APPLICATION_OVERLAY` window over the real launcher. Touches pass through. |
 
+## Page-swipe fade
+
+When the launcher scrolls sideways (the icon finder sees scroll events), the dragon fades out in about 0.09 s and fades back in about 0.17 s after the new page settles, landing on one of that page's icons. If the launcher sends no scroll events, the dragon still fades in when it notices the icon layout changed to a different page.
+
 ## Known limits
 
 - Crawling on widgets and big folders depends on the launcher exposing them to the icon finder. If HyperOS hides a widget from accessibility, that widget is not walkable. The manual grid fallback has no big icons.

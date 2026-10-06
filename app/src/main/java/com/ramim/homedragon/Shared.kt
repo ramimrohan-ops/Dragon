@@ -10,6 +10,7 @@ object IconRegistry {
     @Volatile var serviceActive: Boolean = false        // accessibility service connected
     @Volatile var launcherPkg: String? = null
     var listener: (() -> Unit)? = null                  // always called on the main thread
+    var swipeListener: (() -> Unit)? = null             // launcher page is scrolling sideways (main thread)
 }
 
 object Prefs {

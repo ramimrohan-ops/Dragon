@@ -103,6 +103,7 @@ class DragonService : Service() {
             view?.setIcons(IconRegistry.icons)
             apply()
         }
+        IconRegistry.swipeListener = { view?.onSwipe() }
         v.setIcons(IconRegistry.icons)
 
         val f = IntentFilter().apply {
@@ -156,6 +157,7 @@ class DragonService : Service() {
     override fun onDestroy() {
         instance = null
         IconRegistry.listener = null
+        IconRegistry.swipeListener = null
         try { unregisterReceiver(receiver) } catch (_: Exception) {}
         view?.let {
             it.pause()
