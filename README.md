@@ -50,6 +50,10 @@ When the launcher scrolls sideways (the icon finder sees scroll events), the dra
 
 The icon finder looks at the top-most application window (keyboards, the status bar, picture-in-picture and the dragon's own overlay are ignored). If that window is the launcher, the dragon is shown. If it is any other app, the dragon fades out and the frame loop stops, then it fades back in on the home screen after the icons are read again. The recents screen is detected three ways, all best guesses on HyperOS: the screen's class name, recents-looking views in the launcher's node tree (ids containing recents, overview, task_view or clear_all), and the launcher showing no icons at all for two settled scans. If the icon finder is off, the app cannot tell, so the dragon stays on screen.
 
+## Fire and after-burn
+
+Flame particles are one soft sprite tinted along a smooth colour ramp (white-blue, cyan, blue, indigo, violet) with a hot core while young, and they curl upward as they age. Sparks have glowing heads and fall under gravity. A burnt icon gets soot creeping in from its edges, thin glowing ember cracks that shimmer and cool over about 7 seconds, a faint rim glow, a soft afterglow, floating ash and lazy smoke. The soot slowly fades over about 35 seconds.
+
 ## Speed
 
 Flying, hopping and crawling are about 20 percent slower than v1.2, with slower wing beats to match.

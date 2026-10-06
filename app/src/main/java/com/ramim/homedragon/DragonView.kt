@@ -7,6 +7,8 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffColorFilter
 import android.graphics.RadialGradient
 import android.graphics.Rect
 import android.graphics.RectF
@@ -44,7 +46,7 @@ class DragonView(context: Context) : View(context) {
     private enum class Mode { IDLE, CROUCH, FLY, FIRE, WALK }
 
     private class Icon(val r: RectF, val row: Int) {
-        var burn = 0f; var heat = 0f; var ember = 0f; var sm = 0f; var lk = 0f
+        var burn = 0f; var heat = 0f; var ember = 0f; var sm = 0f; var lk = 0f; var em = 0f
         var big = false          // widget or large folder: bigger ground the dragon can crawl on
         val scorch = Array(4) { floatArrayOf(rnd(-.28f, .28f), rnd(-.28f, .28f), rnd(.28f, .5f), rnd(0f, TAU)) }
         val cx: Float get() = r.centerX()
@@ -113,10 +115,10 @@ class DragonView(context: Context) : View(context) {
     private val sSeed = FloatArray(maxS); private val sVar = IntArray(maxS)
     private var ns = 0
 
-    private val maxP = 70
+    private val maxP = 90
     private val kX = FloatArray(maxP); private val kY = FloatArray(maxP)
     private val kVx = FloatArray(maxP); private val kVy = FloatArray(maxP)
-    private val kAge = FloatArray(maxP); private val kLife = FloatArray(maxP)
+    private val kAge = FloatArray(maxP); private val kLife = FloatArray(maxP); private val kG = FloatArray(maxP)
     private var nk = 0
 
     // ---------- paints and sprites ----------
@@ -224,9 +226,56 @@ class DragonView(context: Context) : View(context) {
     private val sBlack = glow(0, 0, 0)
     // wispy flame particles, two noise variants per colour stage
     private val fCore = Array(2) { flameSprite(238, 249, 255, 11 + it * 5) }
-    private val fCyan = Array(2) { flameSprite(95, 214, 255, 11 + it * 5) }
-    private val fBlue = Array(2) { flameSprite(48, 110, 255, 11 + it * 5) }
-    private val fDeep = Array(2) { flameSprite(70, 48, 225, 11 + it * 5) }
+    // one white flame sprite per variant, tinted along a smooth colour ramp with a colour filter
+    private val fWhite = Array(2) { flameSprite(255, 255, 255, 11 + it * 5) }
+    private val rampStops = arrayOf(
+        intArrayOf(0, 215, 240, 255), intArrayOf(18, 120, 225, 255), intArrayOf(45, 55, 130, 255),
+        intArrayOf(75, 78, 60, 230), intArrayOf(100, 42, 24, 150)
+    )
+    private val ramp = Array(16) { k ->
+        val t = k / 15f * 100f
+        var j = 0
+        while (j < rampStops.size - 2 && t > rampStops[j + 1][0]) j++
+        val a = rampStops[j]; val b = rampStops[j + 1]
+        val u = clampF((t - a[0]) / (b[0] - a[0]).toFloat(), 0f, 1f)
+        PorterDuffColorFilter(
+            Color.rgb((a[1] + (b[1] - a[1]) * u).toInt(), (a[2] + (b[2] - a[2]) * u).toInt(), (a[3] + (b[3] - a[3]) * u).toInt()),
+            PorterDuff.Mode.SRC_IN
+        )
+    }
+    // charred soot (dark at the edges) and two glowing ember-crack layers per variant
+    private fun burnTex(sd: Int): Array<Bitmap> {
+        val n = 96
+        val dens = FloatArray(n * n)
+        val soot = IntArray(n * n)
+        for (y in 0 until n) for (x in 0 until n) {
+            val dx = (x + 0.5f) / n * 2f - 1f; val dy = (y + 0.5f) / n * 2f - 1f
+            val r = max(abs(dx), abs(dy)) * 0.8f + sqrt(dx * dx + dy * dy) * 0.35f
+            val a = clampF(smooth(0.25f, 1f, r) * 0.85f + (fbm(x / 16f + sd, y / 16f, sd) - 0.5f) * 0.9f + 0.18f, 0f, 0.97f)
+            dens[y * n + x] = a
+            soot[y * n + x] = Color.argb((a * 255f).toInt(), 18, 14, 17)
+        }
+        fun cracks(seed: Int): Bitmap {
+            val px = IntArray(n * n)
+            for (y in 0 until n) for (x in 0 until n) {
+                val wx = x + (fbm(x / 20f, y / 20f, seed + 4) - 0.5f) * 14f
+                val wy = y + (fbm(x / 20f + 9f, y / 20f, seed + 5) - 0.5f) * 14f
+                val v = 1f - abs(2f * fbm(wx / 13f, wy / 13f, seed + 1) - 1f)
+                val line = smooth(0.925f, 1f, v).pow(1.3f)
+                val hot = smooth(0.985f, 1f, v)
+                val al = clampF(line * smooth(0.3f, 0.75f, dens[y * n + x]) * (0.55f + 0.8f * hot), 0f, 1f)
+                px[y * n + x] = Color.argb((al * 255f).toInt(), (60 + 150 * hot).toInt(), (170 + 75 * hot).toInt(), 255)
+            }
+            val b = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888)
+            b.setPixels(px, 0, n, 0, 0, n, n)
+            return b
+        }
+        val sb = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888)
+        sb.setPixels(soot, 0, n, 0, 0, n, n)
+        return arrayOf(sb, cracks(sd), cracks(sd + 40))
+    }
+    private val burnTexs = Array(3) { burnTex(5 + it * 7) }
+    private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; blendMode = BlendMode.PLUS }
     private val smkDark = Array(3) { puff(34, 36, 44, 0.34f, 21 + it * 4) }
     private val smkMid = Array(3) { puff(112, 118, 130, 0.3f, 21 + it * 4) }
     private val smkBlue = Array(2) { puff(70, 120, 200, 0.34f, 21 + it * 4) }
@@ -632,7 +681,15 @@ class DragonView(context: Context) : View(context) {
     private fun addSpark(x: Float, y: Float, ang: Float, spd: Float) {
         if (nk >= maxP) return
         kX[nk] = x; kY[nk] = y; kVx[nk] = cos(ang) * spd; kVy[nk] = sin(ang) * spd
-        kAge[nk] = 0f; kLife[nk] = rnd(0.25f, 0.6f)
+        kAge[nk] = 0f; kLife[nk] = rnd(0.3f, 0.75f); kG[nk] = 1f
+        nk++
+    }
+
+    /** Slow glowing ash that floats up off a burnt icon (negative kG marks a floater). */
+    private fun addEmber(x: Float, y: Float) {
+        if (nk >= maxP - 20) return
+        kX[nk] = x; kY[nk] = y; kVx[nk] = rnd(-14f, 14f) * sc; kVy[nk] = -rnd(22f, 60f) * sc
+        kAge[nk] = 0f; kLife[nk] = rnd(1.2f, 2.8f); kG[nk] = -rnd(0.02f, 0.1f)
         nk++
     }
 
@@ -647,14 +704,19 @@ class DragonView(context: Context) : View(context) {
         time += dt
         for (c in icons) {
             c.heat = max(0f, c.heat - dt * 1.4f)
-            c.ember = max(0f, c.ember - dt * 0.25f)
-            if (c.heat < 0.05f) c.burn = max(0f, c.burn - dt * 0.035f)
+            c.ember = max(0f, c.ember - dt * 0.15f)
+            if (c.heat < 0.05f) c.burn = max(0f, c.burn - dt * 0.03f)
             if (c.heat > 0.35f) {
                 c.lk += dt * 12f * c.heat
                 while (c.lk >= 1f) { c.lk -= 1f; addLick(c.r.left + rnd(.15f, .85f) * c.r.width(), c.r.top + rnd(.35f, .8f) * c.r.height()) }
             }
+            if (c.ember > 0.12f && c.burn > 0.15f) {
+                // glowing ash drifting up off the charred icon
+                c.em += dt * 5f * c.ember
+                while (c.em >= 1f) { c.em -= 1f; addEmber(c.r.left + rnd(.1f, .9f) * c.r.width(), c.r.top + rnd(.2f, .9f) * c.r.height()) }
+            }
             if (c.burn > 0.2f) {
-                c.sm += dt * (0.65f + 3.5f * c.heat) * c.burn
+                c.sm += dt * (0.4f + 3.2f * c.heat + 1.4f * c.ember) * c.burn
                 while (c.sm >= 1f) { c.sm -= 1f; addSmoke(c.r.left + rnd(.2f, .8f) * c.r.width(), c.r.top + rnd(.05f, .4f) * c.r.height(), c.heat) }
             }
         }
@@ -743,7 +805,7 @@ class DragonView(context: Context) : View(context) {
             } else {
                 val tt = fAge[i] / fLife[i]
                 val wob = sin(fAge[i] * 26f + fSeed[i]) * 300f * sc * tt * (if (fKind[i] == 1) 1f else 0.4f)
-                fVx[i] += fPx[i] * wob * dt; fVy[i] += fPy[i] * wob * dt - 90f * sc * dt
+                fVx[i] += fPx[i] * wob * dt; fVy[i] += fPy[i] * wob * dt - (90f + (if (fKind[i] == 1) 200f * tt else 40f * tt)) * sc * dt
                 fX[i] += fVx[i] * dt; fY[i] += fVy[i] * dt
                 val k = 0.4f.pow(dt); fVx[i] *= k; fVy[i] *= k
             }
@@ -754,9 +816,15 @@ class DragonView(context: Context) : View(context) {
             kAge[i] += dt
             if (kAge[i] >= kLife[i]) {
                 nk--
-                kX[i] = kX[nk]; kY[i] = kY[nk]; kVx[i] = kVx[nk]; kVy[i] = kVy[nk]; kAge[i] = kAge[nk]; kLife[i] = kLife[nk]
+                kX[i] = kX[nk]; kY[i] = kY[nk]; kVx[i] = kVx[nk]; kVy[i] = kVy[nk]; kAge[i] = kAge[nk]; kLife[i] = kLife[nk]; kG[i] = kG[nk]
             } else {
-                kVy[i] += 520f * sc * dt; kX[i] += kVx[i] * dt; kY[i] += kVy[i] * dt
+                kVy[i] += 520f * sc * kG[i] * dt
+                if (kG[i] < 0f) {                      // floating ash: drag plus a lazy sideways drift
+                    val dr = max(0f, 1f - dt * 1.1f)
+                    kVx[i] = kVx[i] * dr + sin(kAge[i] * 3.1f + kY[i] * 0.05f) * 40f * sc * dt
+                    kVy[i] *= dr
+                }
+                kX[i] += kVx[i] * dt; kY[i] += kVy[i] * dt
             }
             i--
         }
@@ -815,34 +883,52 @@ class DragonView(context: Context) : View(context) {
 
     private fun drawBurn(c: Canvas, ic: Icon) {
         val r = ic.r
-        if (ic.heat > 0.02f) {
-            plusPaint.alpha = (ic.heat * 0.85f * (0.88f + 0.12f * sin(time * 23f + ic.cx)) * 255f).toInt()
+        // heat halo: bright while burning, a faint breathing afterglow while the embers last
+        val glowA = max(ic.heat * 0.85f, ic.ember * 0.28f * min(1f, ic.burn * 2f))
+        if (glowA > 0.02f) {
+            plusPaint.alpha = (glowA * (0.88f + 0.12f * sin(time * 23f + ic.cx)) * 255f).toInt()
             dest.set(r.left - size * 0.6f, r.top - size * 0.6f, r.right + size * 0.6f, r.bottom + size * 0.6f)
             c.drawBitmap(sBlue, null, dest, plusPaint)
+        }
+        if (ic.heat > 0.02f) {
             plusPaint.alpha = (ic.heat * 0.5f * 255f).toInt()
             dest.set(r.left - size * 0.1f, r.top - size * 0.1f, r.right + size * 0.1f, r.bottom + size * 0.1f)
             c.drawBitmap(sCyan, null, dest, plusPaint)
         }
         if (ic.burn > 0.01f) {
+            val tex = burnTexs[(ic.scorch[0][3] * 0.47f).toInt().coerceIn(0, 2)]
+            val flip = if (ic.scorch[1][3] > PI) -1f else 1f
             c.save()
             clip.reset()
             clip.addRoundRect(r, size * 0.24f, size * 0.24f, Path.Direction.CW)
             c.clipPath(clip)
-            tint.color = Color.argb((ic.burn * 0.55f * 255f).toInt(), 14, 10, 12)
+            tint.color = Color.argb((ic.burn * 0.3f * 255f).toInt(), 14, 10, 12)
             c.drawRect(r, tint)
-            spritePaint.alpha = min(255, (ic.burn * 1.1f * 255f).toInt())
-            for (s in ic.scorch) {
-                val rad = s[2] * size * (0.6f + ic.burn * 0.6f)
-                sprite(c, sBlack, ic.cx + s[0] * r.width(), ic.cy + s[1] * r.height(), rad, spritePaint)
-            }
+            // soot creeps in from the edges as the burn level rises
+            c.scale(flip, 1f, ic.cx, ic.cy)
+            dest.set(r.left - r.width() * 0.06f, r.top - r.height() * 0.06f, r.right + r.width() * 0.06f, r.bottom + r.height() * 0.06f)
+            spritePaint.alpha = min(255, (ic.burn * 1.15f * 255f).toInt())
+            c.drawBitmap(tex[0], null, dest, spritePaint)
             if (ic.ember > 0.02f) {
-                for (s in ic.scorch) {
-                    val fl = 0.5f + 0.5f * sin(time * 9f + s[3])
-                    plusPaint.alpha = (ic.ember * min(1f, ic.burn * 1.5f) * fl * 0.55f * 255f).toInt()
-                    sprite(c, sCyan, ic.cx + s[0] * r.width(), ic.cy + s[1] * r.height(), s[2] * size * 0.45f, plusPaint)
-                }
+                // glowing cracks that shimmer between two patterns and cool off with the ember level
+                val k = 0.5f + 0.5f * sin(time * 3.2f + ic.cx * 0.01f)
+                val e = ic.ember * min(1f, ic.burn * 1.6f)
+                plusPaint.alpha = (e * k * 255f).toInt()
+                c.drawBitmap(tex[1], null, dest, plusPaint)
+                plusPaint.alpha = (e * (1f - k) * 255f).toInt()
+                c.drawBitmap(tex[2], null, dest, plusPaint)
             }
             c.restore()
+            if (ic.ember > 0.05f) {
+                // thin glowing rim, like hot metal
+                val e = ic.ember * min(1f, ic.burn * 1.6f) * (0.75f + 0.25f * sin(time * 5f + ic.cy * 0.02f))
+                rimPaint.strokeWidth = size * 0.07f
+                rimPaint.color = Color.argb((e * 0.22f * 255f).toInt(), 70, 170, 255)
+                c.drawRoundRect(r, size * 0.24f, size * 0.24f, rimPaint)
+                rimPaint.strokeWidth = size * 0.025f
+                rimPaint.color = Color.argb((e * 0.6f * 255f).toInt(), 150, 225, 255)
+                c.drawRoundRect(r, size * 0.24f, size * 0.24f, rimPaint)
+            }
         }
     }
 
@@ -871,26 +957,43 @@ class DragonView(context: Context) : View(context) {
         for (i in 0 until nf) {
             val tt = fAge[i] / fLife[i]
             val kind = fKind[i]
-            val s = fSize[i] * (0.55f + tt * (if (kind == 0) 1.0f else 1.5f))
+            // grow quickly, then thin out at the end
+            val s = fSize[i] * (0.5f + tt * (if (kind == 0) 1.1f else 1.7f)) * (1f - 0.4f * tt * tt)
             val spd = hypot(fVx[i], fVy[i])
             val stretch = 1f + min(1.6f, spd / (520f * sc)) * (if (kind == 2) 0.2f else 1f)
             val v = if (fSeed[i] > PI) 1 else 0
-            val spr = if (kind == 0) (if (tt < 0.4f) fCore[v] else if (tt < 0.75f) fCyan[v] else fBlue[v])
-            else (if (tt < 0.12f) fCore[v] else if (tt < 0.4f) fCyan[v] else if (tt < 0.75f) fBlue[v] else fDeep[v])
+            val fl = 0.86f + 0.14f * sin(fAge[i] * 40f + fSeed[i])
             c.save(); c.translate(fX[i], fY[i]); c.rotate(deg(atan2(fVy[i], fVx[i]))); c.scale(stretch, 1f)
             if (kind == 1 && (i and 1) == 0 && tt < 0.6f) {
                 plusPaint.alpha = ((1f - tt) * 0.4f * 255f).toInt()
                 sprite(c, sBlue, 0f, 0f, s * 1.7f, plusPaint)
             }
-            plusPaint.alpha = (min(1f, (1f - tt) * 1.1f) * 0.9f * (0.86f + 0.14f * sin(fAge[i] * 40f + fSeed[i])) * 255f).toInt()
-            sprite(c, spr, 0f, 0f, s, plusPaint)
+            // body: white sprite tinted along the colour ramp (white-blue, cyan, blue, indigo, dark violet)
+            plusPaint.colorFilter = ramp[(tt * 15f).toInt().coerceIn(0, 15)]
+            plusPaint.alpha = (min(1f, (1f - tt) * 1.1f) * 0.9f * fl * 255f).toInt()
+            sprite(c, fWhite[v], 0f, 0f, s, plusPaint)
+            plusPaint.colorFilter = null
+            // hot core while the particle is young
+            if (tt < 0.38f) {
+                plusPaint.alpha = ((1f - tt / 0.38f) * 0.85f * fl * 255f).toInt()
+                sprite(c, fCore[v], 0f, 0f, s * 0.55f, plusPaint)
+            }
             c.restore()
         }
         sparkPaint.strokeWidth = max(1f, 1.6f * sc)
         for (i in 0 until nk) {
             val a = 1f - kAge[i] / kLife[i]
-            sparkPaint.color = Color.argb((a * 255f).toInt(), 190, 230, 255)
-            c.drawLine(kX[i], kY[i], kX[i] - kVx[i] * 0.035f, kY[i] - kVy[i] * 0.035f, sparkPaint)
+            if (kG[i] < 0f) {
+                // floating ash: a small flickering glow
+                val fl = 0.55f + 0.45f * sin(kAge[i] * 14f + kX[i])
+                plusPaint.alpha = (a * fl * 0.9f * 255f).toInt()
+                sprite(c, sCyan, kX[i], kY[i], 3.2f * sc * (0.6f + 0.4f * a), plusPaint)
+            } else {
+                sparkPaint.color = Color.argb((a * 255f).toInt(), 190, 230, 255)
+                c.drawLine(kX[i], kY[i], kX[i] - kVx[i] * 0.04f, kY[i] - kVy[i] * 0.04f, sparkPaint)
+                plusPaint.alpha = (a * 0.8f * 255f).toInt()
+                sprite(c, sCore, kX[i], kY[i], 2.6f * sc, plusPaint)
+            }
         }
         if (mode == Mode.FIRE && st.mouth > 0.05f) {
             model.mouthPos(st, mp)
