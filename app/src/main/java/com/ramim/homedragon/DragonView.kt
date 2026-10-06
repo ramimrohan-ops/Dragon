@@ -238,6 +238,22 @@ class DragonView(context: Context) : View(context) {
     private var swipeLast = 0L
     private var settleAt = 0L
 
+    private var hiddenByApp = false
+    private var hiddenNotified = false
+    /** Called once the dragon has faded out because an app (not the home screen) is in front. */
+    var onFullyHidden: (() -> Unit)? = null
+
+    /** false while another app is in front: fade out, then the service stops the frame loop. */
+    fun setShown(shown: Boolean) {
+        if (shown == !hiddenByApp) return
+        hiddenByApp = !shown
+        hiddenNotified = false
+        if (shown) {
+            // back on the home screen: wait for the fresh icon layout, then fade in (see applyIcons)
+            swipeState = 2; settleAt = SystemClock.uptimeMillis(); fadeGoal = 0f
+        }
+    }
+
     /** The launcher is scrolling sideways: fade out fast. */
     fun onSwipe() {
         swipeLast = SystemClock.uptimeMillis()
@@ -484,8 +500,8 @@ class DragonView(context: Context) : View(context) {
         px.add(ex); py.add(ey)
         val p = buildPath(px, py)
         path = p
-        val speed = (if (hop) 330f else rnd(250f, 340f)) * sc
-        dur = max(if (hop) 0.58f else 0.95f, p.len / speed)
+        val speed = (if (hop) 265f else rnd(200f, 272f)) * sc
+        dur = max(if (hop) 0.7f else 1.15f, p.len / speed)
         t = 0f; mode = Mode.FLY; air = true; then = after; st.wingPh = -(PI / 2).toFloat()
     }
 
@@ -625,7 +641,8 @@ class DragonView(context: Context) : View(context) {
         val now = SystemClock.uptimeMillis()
         if (swipeState == 1 && now - swipeLast > 120L) { swipeState = 2; settleAt = now }
         else if (swipeState == 2 && now - settleAt > 450L) { swipeState = 0; fadeGoal = 1f }
-        fade += clampF(fadeGoal - fade, -dt / 0.09f, dt / 0.17f)
+        fade += clampF((if (hiddenByApp) 0f else fadeGoal) - fade, -dt / 0.09f, dt / 0.17f)
+        if (hiddenByApp && fade <= 0.01f && !hiddenNotified) { hiddenNotified = true; post { onFullyHidden?.invoke() } }
         if (icons.isEmpty()) return
         time += dt
         for (c in icons) {
@@ -651,7 +668,7 @@ class DragonView(context: Context) : View(context) {
 
         st.sp += ((if (air) 1f else 0f) - st.sp) * min(1f, dt * 7f)
         st.walk += ((if (mode == Mode.WALK) 1f else 0f) - st.walk) * min(1f, dt * 6f)
-        val flapHz = if (air) 2.5f + 0.9f * sin(time * 0.8f) + (if (mode == Mode.FIRE) 0.5f else 0f) else 0.5f
+        val flapHz = if (air) 2.2f + 0.7f * sin(time * 0.8f) + (if (mode == Mode.FIRE) 0.5f else 0f) else 0.5f
         st.wingPh += dt * TAU * flapHz
         st.crouch = if (mode == Mode.CROUCH) clampF(t / dur * 1.15f, 0f, 1f) else max(0f, st.crouch - dt * (if (air) 6f else 4.5f))
 
@@ -660,7 +677,7 @@ class DragonView(context: Context) : View(context) {
         when (mode) {
             Mode.IDLE -> { timer -= dt; if (timer <= 0f) chooseNext() }
             Mode.WALK -> {
-                val spd = 32f * sc * st.walk * st.walk
+                val spd = 26f * sc * st.walk * st.walk
                 val dx = walkTo - st.x; val stp = min(abs(dx), spd * dt)
                 st.x += (if (dx > 0f) stp else -stp); st.gait += stp / ds / 46.7f
                 if (abs(walkTo - st.x) < 0.5f) { mode = Mode.IDLE; timer = rnd(1.4f, 3.2f) }

@@ -104,6 +104,12 @@ class DragonService : Service() {
             apply()
         }
         IconRegistry.swipeListener = { view?.onSwipe() }
+        v.onFullyHidden = {
+            if (IconRegistry.serviceActive && !IconRegistry.onHome && screenActive) {
+                v.visibility = View.GONE
+                v.pause()
+            }
+        }
         v.setIcons(IconRegistry.icons)
 
         val f = IntentFilter().apply {
@@ -138,10 +144,19 @@ class DragonService : Service() {
     /** One place that decides whether the frame loop runs. */
     private fun apply() {
         val v = view ?: return
+        if (!screenActive) {                       // screen off or locked: stop everything at once
+            v.visibility = View.GONE
+            v.pause()
+            return
+        }
         val homeOk = !IconRegistry.serviceActive || IconRegistry.onHome
-        val show = screenActive && homeOk
-        v.visibility = if (show) View.VISIBLE else View.GONE
-        if (show) v.resume() else v.pause()
+        if (homeOk) {
+            v.visibility = View.VISIBLE
+            v.resume()
+            v.setShown(true)
+        } else {
+            v.setShown(false)                      // fades out, then onFullyHidden pauses the loop
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

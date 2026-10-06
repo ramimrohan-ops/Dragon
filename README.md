@@ -46,6 +46,14 @@ dumpsys deviceidle whitelist +com.ramim.homedragon
 
 When the launcher scrolls sideways (the icon finder sees scroll events), the dragon fades out in about 0.09 s and fades back in about 0.17 s after the new page settles, landing on one of that page's icons. If the launcher sends no scroll events, the dragon still fades in when it notices the icon layout changed to a different page.
 
+## Home screen or app?
+
+The icon finder looks at the top-most application window (keyboards, the status bar, picture-in-picture and the dragon's own overlay are ignored). If that window is the launcher, the dragon is shown. If it is any other app, the dragon fades out and the frame loop stops, then it fades back in on the home screen after the icons are read again. The recents screen is detected by its class name, which is a best guess on HyperOS. If the icon finder is off, the app cannot tell, so the dragon stays on screen.
+
+## Speed
+
+Flying, hopping and crawling are about 20 percent slower than v1.2, with slower wing beats to match.
+
 ## Known limits
 
 - Crawling on widgets and big folders depends on the launcher exposing them to the icon finder. If HyperOS hides a widget from accessibility, that widget is not walkable. The manual grid fallback has no big icons.

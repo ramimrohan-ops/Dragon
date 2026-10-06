@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import kotlin.math.abs
 import kotlin.math.min
 
@@ -40,18 +41,53 @@ class IconFinderService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        val pkg = event.packageName?.toString() ?: return
-        val launcher = IconRegistry.launcherPkg ?: return
+    private var recents = false
 
-        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+    /**
+     * Is the home screen what the user is looking at? Looks at the top-most application window
+     * (keyboards, status bar, our own overlay and picture-in-picture windows do not count).
+     * Returns null when the window list is unavailable.
+     */
+    private fun homeFromWindows(): Boolean? {
+        val launcher = IconRegistry.launcherPkg ?: return null
+        try {
+            for (w in windows) {                         // ordered top to bottom
+                if (w.type != AccessibilityWindowInfo.TYPE_APPLICATION) continue
+                if (w.isInPictureInPictureMode) continue
+                val p = w.root?.packageName?.toString()
+                if (p == packageName) continue
+                if (p == null) return false             // unreadable window on top (secure app): not home
+                return p == launcher && !recents
+            }
+        } catch (_: Exception) {
+        }
+        return null
+    }
+
+    private fun setHome(h: Boolean) {
+        if (h != IconRegistry.onHome) {
+            IconRegistry.onHome = h
+            IconRegistry.listener?.invoke()
+            if (h) queueScan()
+        }
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        val launcher = IconRegistry.launcherPkg ?: return
+        val type = event.eventType
+
+        // Window list changes carry no package name, so they are handled first.
+        if (type == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+            homeFromWindows()?.let { setHome(it) }
+            return
+        }
+        val pkg = event.packageName?.toString() ?: return
+
+        if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             // Ignore system overlays that do not change what the user is looking at.
             if (pkg == "com.android.systemui" || pkg == packageName) return
-            val nowHome = pkg == launcher
-            if (nowHome != IconRegistry.onHome) {
-                IconRegistry.onHome = nowHome
-                IconRegistry.listener?.invoke()
-            }
+            if (pkg == launcher) recents = event.className?.contains("recent", ignoreCase = true) == true
+            setHome(homeFromWindows() ?: (pkg == launcher && !recents))
         }
         if (event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED && pkg == launcher) {
             val dx = event.scrollDeltaX; val dy = event.scrollDeltaY
