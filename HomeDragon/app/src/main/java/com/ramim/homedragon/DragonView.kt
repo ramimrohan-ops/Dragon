@@ -242,34 +242,27 @@ class DragonView(context: Context) : View(context) {
             PorterDuff.Mode.SRC_IN
         )
     }
-    // two glowing ember-crack layers per variant (no soot: the icon keeps its own colours)
-    private fun burnTex(sd: Int): Array<Bitmap> {
+    // soft white-hot patches (brightest in the middle, nothing at the edges): tinted by the cooling colour
+    private fun heatTex(sd: Int): Array<Bitmap> {
         val n = 96
-        val dens = FloatArray(n * n)
-        for (y in 0 until n) for (x in 0 until n) {
-            val dx = (x + 0.5f) / n * 2f - 1f; val dy = (y + 0.5f) / n * 2f - 1f
-            val r = max(abs(dx), abs(dy)) * 0.8f + sqrt(dx * dx + dy * dy) * 0.35f
-            val a = clampF(smooth(0.25f, 1f, r) * 0.85f + (fbm(x / 16f + sd, y / 16f, sd) - 0.5f) * 0.9f + 0.18f, 0f, 0.97f)
-            dens[y * n + x] = a
-        }
-        fun cracks(seed: Int): Bitmap {
+        fun layer(seed: Int): Bitmap {
             val px = IntArray(n * n)
             for (y in 0 until n) for (x in 0 until n) {
-                val wx = x + (fbm(x / 20f, y / 20f, seed + 4) - 0.5f) * 14f
-                val wy = y + (fbm(x / 20f + 9f, y / 20f, seed + 5) - 0.5f) * 14f
-                val v = 1f - abs(2f * fbm(wx / 13f, wy / 13f, seed + 1) - 1f)
-                val line = smooth(0.925f, 1f, v).pow(1.3f)
-                val hot = smooth(0.985f, 1f, v)
-                val al = clampF(line * smooth(0.3f, 0.75f, dens[y * n + x]) * (0.55f + 0.8f * hot), 0f, 1f)
-                px[y * n + x] = Color.argb((al * 255f).toInt(), (60 + 150 * hot).toInt(), (170 + 75 * hot).toInt(), 255)
+                val dx = (x + 0.5f) / n * 2f - 1f; val dy = (y + 0.5f) / n * 2f - 1f
+                val centre = smooth(1.05f, 0.05f, max(abs(dx), abs(dy)) * 0.55f + sqrt(dx * dx + dy * dy) * 0.6f)
+                val wx = x + (fbm(x / 22f, y / 22f, seed + 4) - 0.5f) * 16f
+                val wy = y + (fbm(x / 22f + 9f, y / 22f, seed + 5) - 0.5f) * 16f
+                val v = fbm(wx / 12f, wy / 12f, seed + 1)
+                val al = clampF(centre * (0.35f + 1.1f * smooth(0.3f, 0.8f, v)), 0f, 1f)
+                px[y * n + x] = Color.argb((al * 255f).toInt(), 255, 255, 255)
             }
             val b = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888)
             b.setPixels(px, 0, n, 0, 0, n, n)
             return b
         }
-        return arrayOf(cracks(sd), cracks(sd + 40))
+        return arrayOf(layer(sd), layer(sd + 40))
     }
-    private val burnTexs = Array(3) { burnTex(5 + it * 7) }
+    private val burnTexs = Array(3) { heatTex(5 + it * 7) }
     private val smkDark = Array(3) { puff(34, 36, 44, 0.34f, 21 + it * 4) }
     private val smkMid = Array(3) { puff(112, 118, 130, 0.3f, 21 + it * 4) }
     private val smkBlue = Array(2) { puff(70, 120, 200, 0.34f, 21 + it * 4) }
@@ -626,15 +619,20 @@ class DragonView(context: Context) : View(context) {
     // ---------- effects ----------
     private fun emitFlame(mx: Float, my: Float, tx: Float, ty: Float) {
         if (nf >= maxF) return
-        val dx = tx - mx; val dy = ty - my; val d = max(1f, hypot(dx, dy)); val ux = dx / d; val uy = dy / d
         val kind = if (Random.nextFloat() < 0.35f) 0 else 1
-        val sp = clampF(d / 0.4f, 300f * sc, 720f * sc) * rnd(0.85f, 1.15f)
-        val a = (Random.nextFloat() - 0.5f) * (if (kind == 0) 0.1f else 0.34f)
+        val life = if (kind == 0) rnd(0.3f, 0.46f) else rnd(0.45f, 0.8f)
+        // the particle should reach the icon centre near the end of its life: solve the launch speed
+        // against the air drag (0.4 per second) and compensate the upward drift
+        val arrive = life * rnd(0.74f, 0.86f)
+        val lift = 0.5f * (90f + (if (kind == 1) 100f else 20f)) * sc * arrive * arrive
+        val dx = tx - mx; val dy = ty + lift - my; val d = max(1f, hypot(dx, dy)); val ux = dx / d; val uy = dy / d
+        val sp = clampF(d * 0.916f / (1f - 0.4f.pow(arrive)), 260f * sc, 1500f * sc)
+        val a = (Random.nextFloat() - 0.5f) * (if (kind == 0) 0.05f else 0.16f)
         val cs = cos(a); val sn = sin(a)
         fX[nf] = mx; fY[nf] = my
         fVx[nf] = (ux * cs - uy * sn) * sp; fVy[nf] = (ux * sn + uy * cs) * sp
         fPx[nf] = -uy; fPy[nf] = ux
-        fAge[nf] = 0f; fLife[nf] = if (kind == 0) rnd(0.3f, 0.46f) else rnd(0.45f, 0.8f)
+        fAge[nf] = 0f; fLife[nf] = life
         fSize[nf] = (if (kind == 0) rnd(8f, 12f) else rnd(13f, 22f)) * ds * 1.35f
         fSeed[nf] = rnd(0f, TAU); fKind[nf] = kind
         nf++
@@ -642,9 +640,9 @@ class DragonView(context: Context) : View(context) {
 
     private fun addSplash(x: Float, y: Float) {
         if (nf >= maxF) return
-        val side = if (Random.nextBoolean()) -1f else 1f
+        val a = rnd(0f, TAU); val sp = rnd(70f, 210f) * sc
         fX[nf] = x; fY[nf] = y
-        fVx[nf] = side * rnd(60f, 190f) * sc; fVy[nf] = -rnd(30f, 140f) * sc
+        fVx[nf] = cos(a) * sp; fVy[nf] = sin(a) * sp * 0.8f - rnd(0f, 50f) * sc
         fPx[nf] = 0f; fPy[nf] = 1f
         fAge[nf] = 0f; fLife[nf] = rnd(0.22f, 0.4f); fSize[nf] = rnd(7f, 12f) * ds * 1.3f
         fSeed[nf] = rnd(0f, TAU); fKind[nf] = 2
@@ -652,12 +650,12 @@ class DragonView(context: Context) : View(context) {
     }
 
     /** Small flame tongue rising off an icon that was just set alight. */
-    private fun addLick(x: Float, y: Float) {
+    private fun addLick(x: Float, y: Float, small: Boolean) {
         if (nf >= maxF - 40) return
         fX[nf] = x; fY[nf] = y
-        fVx[nf] = rnd(-14f, 14f) * sc; fVy[nf] = -rnd(70f, 150f) * sc
+        fVx[nf] = rnd(-14f, 14f) * sc; fVy[nf] = -rnd(70f, 150f) * sc * (if (small) 0.6f else 1f)
         fPx[nf] = 1f; fPy[nf] = 0f
-        fAge[nf] = 0f; fLife[nf] = rnd(0.35f, 0.6f); fSize[nf] = rnd(7f, 11f) * ds * 1.3f
+        fAge[nf] = 0f; fLife[nf] = rnd(0.35f, 0.6f); fSize[nf] = rnd(7f, 11f) * ds * 1.3f * (if (small) 0.7f else 1f)
         fSeed[nf] = rnd(0f, TAU); fKind[nf] = 3
         nf++
     }
@@ -698,11 +696,16 @@ class DragonView(context: Context) : View(context) {
         time += dt
         for (c in icons) {
             c.heat = max(0f, c.heat - dt * 1.4f)
-            c.ember = max(0f, c.ember - dt * 0.15f)
+            c.ember = max(0f, c.ember - dt * 0.1f)
             if (c.heat < 0.05f) c.burn = max(0f, c.burn - dt * 0.03f)
             if (c.heat > 0.35f) {
                 c.lk += dt * 12f * c.heat
-                while (c.lk >= 1f) { c.lk -= 1f; addLick(c.r.left + rnd(.15f, .85f) * c.r.width(), c.r.top + rnd(.35f, .8f) * c.r.height()) }
+                while (c.lk >= 1f) { c.lk -= 1f; addLick(c.cx + rnd(-.35f, .35f) * c.r.width(), c.cy + rnd(-.2f, .3f) * c.r.height(), false) }
+            }
+            else if (c.ember > 0.45f && c.burn > 0.3f) {
+                // small blue pilot flames keep flickering while the icon is still white hot
+                c.lk += dt * (c.ember - 0.4f) * 8f
+                while (c.lk >= 1f) { c.lk -= 1f; addLick(c.cx + rnd(-.3f, .3f) * c.r.width(), c.cy + rnd(-.1f, .3f) * c.r.height(), true) }
             }
             if (c.ember > 0.12f && c.burn > 0.15f) {
                 // glowing ash drifting up off the charred icon
@@ -784,11 +787,17 @@ class DragonView(context: Context) : View(context) {
         var i = nf - 1
         while (i >= 0) {
             fAge[i] += dt
-            if (tgt != null && fKind[i] != 3 && fX[i] > tgt.r.left - 4f && fX[i] < tgt.r.right + 4f && fY[i] > tgt.r.top - 4f && fY[i] < tgt.r.bottom + 4f) {
-                fAge[i] += dt * 2.2f
-                if (Random.nextFloat() < 0.15f) {
-                    addSplash(fX[i], tgt.r.top + size * 0.1f)
-                    if (Random.nextFloat() < 0.35f) addSpark(fX[i], tgt.r.top, -(PI / 2).toFloat() + rnd(-1.2f, 1.2f), rnd(120f, 380f) * sc)
+            if (tgt != null && fKind[i] < 2) {
+                // the stream lands in the middle of the icon: pool, splash and spray from there
+                val ddx = fX[i] - tgt.cx; val ddy = fY[i] - tgt.cy
+                val rr = min(size * 0.34f, min(tgt.r.width(), tgt.r.height()) * 0.3f)
+                if (ddx * ddx + ddy * ddy < rr * rr) {
+                    fAge[i] += dt * 3.2f
+                    val dmp = max(0f, 1f - dt * 9f); fVx[i] *= dmp; fVy[i] *= dmp
+                    if (Random.nextFloat() < 0.2f) {
+                        addSplash(fX[i], fY[i])
+                        if (Random.nextFloat() < 0.4f) addSpark(fX[i], fY[i], rnd(0f, TAU), rnd(120f, 360f) * sc)
+                    }
                 }
             }
             if (fAge[i] >= fLife[i]) {
@@ -877,38 +886,47 @@ class DragonView(context: Context) : View(context) {
 
     private fun drawBurn(c: Canvas, ic: Icon) {
         val r = ic.r
-        // heat halo: bright while burning, a faint breathing afterglow while the embers last
-        val glowA = max(ic.heat * 0.85f, ic.ember * 0.28f * min(1f, ic.burn * 2f))
-        if (glowA > 0.02f) {
-            plusPaint.alpha = (glowA * (0.88f + 0.12f * sin(time * 23f + ic.cx)) * 255f).toInt()
-            dest.set(r.left - size * 0.6f, r.top - size * 0.6f, r.right + size * 0.6f, r.bottom + size * 0.6f)
+        // how hot the icon still is: 1 right after the fire, easing to 0 over about 10 s
+        val gl = ic.ember * min(1f, ic.burn * 2f)
+        // soft bloom around the icon: strong while the fire hits, a gentle breathing afterglow after
+        val bloom = max(ic.heat * 0.8f, gl * 0.26f)
+        if (bloom > 0.02f) {
+            plusPaint.alpha = (bloom * (0.9f + 0.1f * sin(time * 9f + ic.cx)) * 255f).toInt()
+            dest.set(r.left - size * 0.55f, r.top - size * 0.55f, r.right + size * 0.55f, r.bottom + size * 0.55f)
             c.drawBitmap(sBlue, null, dest, plusPaint)
         }
-        if (ic.heat > 0.02f) {
-            plusPaint.alpha = (ic.heat * 0.5f * 255f).toInt()
-            dest.set(r.left - size * 0.1f, r.top - size * 0.1f, r.right + size * 0.1f, r.bottom + size * 0.1f)
-            c.drawBitmap(sCyan, null, dest, plusPaint)
-        }
-        if (ic.burn > 0.01f) {
-            val tex = burnTexs[(ic.scorch[0][3] * 0.47f).toInt().coerceIn(0, 2)]
-            val flip = if (ic.scorch[1][3] > PI) -1f else 1f
+        if (gl <= 0.02f && ic.heat <= 0.02f) return
+        val tex = burnTexs[(ic.scorch[0][3] * 0.47f).toInt().coerceIn(0, 2)]
+        val flip = if (ic.scorch[1][3] > PI) -1f else 1f
+        c.save()
+        clip.reset()
+        clip.addRoundRect(r, size * 0.24f, size * 0.24f, Path.Direction.CW)
+        c.clipPath(clip)
+        // white-hot at first, then cyan, then deep blue as it cools; only ever adds light, never darkens
+        val g1 = gl * gl * (3f - 2f * gl)
+        if (gl > 0.02f) {
+            val k = 0.5f + 0.5f * sin(time * 2.6f + ic.cx * 0.01f)
+            plusPaint.colorFilter = ramp[((1f - g1) * 11f).toInt().coerceIn(0, 11)]
             c.save()
-            clip.reset()
-            clip.addRoundRect(r, size * 0.24f, size * 0.24f, Path.Direction.CW)
-            c.clipPath(clip)
             c.scale(flip, 1f, ic.cx, ic.cy)
-            dest.set(r.left - r.width() * 0.06f, r.top - r.height() * 0.06f, r.right + r.width() * 0.06f, r.bottom + r.height() * 0.06f)
-            if (ic.ember > 0.02f) {
-                // glowing cracks that shimmer between two patterns and cool off with the ember level
-                val k = 0.5f + 0.5f * sin(time * 3.2f + ic.cx * 0.01f)
-                val e = ic.ember * min(1f, ic.burn * 1.6f)
-                plusPaint.alpha = (e * k * 255f).toInt()
-                c.drawBitmap(tex[0], null, dest, plusPaint)
-                plusPaint.alpha = (e * (1f - k) * 255f).toInt()
-                c.drawBitmap(tex[1], null, dest, plusPaint)
-            }
+            dest.set(r.left - r.width() * 0.04f, r.top - r.height() * 0.04f, r.right + r.width() * 0.04f, r.bottom + r.height() * 0.04f)
+            plusPaint.alpha = (g1 * (0.3f + 0.4f * k) * 255f).toInt()
+            c.drawBitmap(tex[0], null, dest, plusPaint)
+            plusPaint.alpha = (g1 * (0.7f - 0.4f * k) * 255f).toInt()
+            c.drawBitmap(tex[1], null, dest, plusPaint)
             c.restore()
+            plusPaint.colorFilter = null
+            // warm heart of the icon
+            val fl = 0.85f + 0.15f * sin(time * 17f + ic.cy * 0.03f)
+            plusPaint.alpha = (g1 * 0.5f * fl * 255f).toInt()
+            sprite(c, sCyan, ic.cx, ic.cy, size * 0.62f, plusPaint)
         }
+        if (ic.heat > 0.02f) {
+            // impact: bright blue-white spot where the stream lands
+            plusPaint.alpha = (ic.heat * 0.9f * 255f).toInt()
+            sprite(c, sCore, ic.cx, ic.cy, size * 0.5f * (0.7f + 0.3f * ic.heat), plusPaint)
+        }
+        c.restore()
     }
 
     private fun drawSmoke(c: Canvas) {
@@ -917,7 +935,7 @@ class DragonView(context: Context) : View(context) {
             val s = sSize[i] * (1f + tt * 3.2f)
             val env = min(1f, tt * 7f) * (1f - tt).pow(1.5f)
             c.save(); c.translate(sX[i], sY[i]); c.rotate(deg(sRot[i]))
-            spritePaint.alpha = (env * 0.55f * (1f - tt * 0.7f) * 255f).toInt()
+            spritePaint.alpha = (env * 0.3f * (1f - tt * 0.7f) * 255f).toInt()
             dest.set(-s, -s, s, s); c.drawBitmap(smkDark[sVar[i]], null, dest, spritePaint)
             if (tt > 0.2f) {
                 spritePaint.alpha = (env * 0.6f * tt * 255f).toInt()

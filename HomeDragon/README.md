@@ -52,7 +52,7 @@ The icon finder looks at the top-most application window (keyboards, the status 
 
 ## Fire and after-burn
 
-Flame particles are one soft sprite tinted along a smooth colour ramp (white-blue, cyan, blue, indigo, violet) with a hot core while young, and they curl upward as they age. Sparks have glowing heads and fall under gravity. A burnt icon keeps its own colours (no charring or soot) and gets thin glowing ember cracks that shimmer and cool over about 7 seconds, a soft afterglow, floating ash and lazy smoke.
+Flame particles are one soft sprite tinted along a smooth colour ramp (white-blue, cyan, blue, indigo, violet) with a hot core while young, and they curl upward as they age. Sparks have glowing heads and fall under gravity. The stream is aimed at the middle of the icon: each particle's launch speed is solved so it arrives there, then pools, splashes and sprays sparks from the centre. After the fire the icon never darkens. It glows white-hot from the middle (soft, no edge ring), shifts to cyan and then deep blue, and cools over about 10 seconds, with small blue pilot flames while it is still hot, floating ash and light smoke.
 
 ## Speed
 
